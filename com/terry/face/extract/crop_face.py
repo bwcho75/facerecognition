@@ -15,6 +15,9 @@ NUM_THREADS = 10
 MAX_RESULTS = 1
 IMAGE_SIZE = 96,96
 
+# index to transfrom image string label to number
+global_label_index = 0 
+
 class FaceDetector():
     def __init__(self):
         # initialize library
@@ -50,6 +53,11 @@ class FaceDetector():
                  return None
                 
             face = response['responses'][0]['faceAnnotations']
+          
+            if len(face) > 1 :
+                print('[Error] %s: It has more than 2 faces in a file' % image_file)
+                return None
+            
             box = face[0]['fdBoundingPoly']['vertices']
             left = box[0]['x']
             top = box[1]['y']
@@ -97,6 +105,7 @@ class FaceDetector():
 
         return files
     
+    # read files in src_dir and generate image that rectangle in face and write into files in des_dir
     def rect_faces_dir(self,src_dir,des_dir):
         if not os.path.exists(des_dir):
             os.makedirs(des_dir)
@@ -107,8 +116,9 @@ class FaceDetector():
             rect = self.detect_face(f)
             if rect != None:
                 self.rect_face(f, rect, des_file)
-                
-    def crop_faces_dir(self,src_dir,des_dir):
+    
+    # read files in src_dir and crop face only and write it into des_dir
+    def crop_faces_dir(self,src_dir,des_dir,maxnum):
         
         # training data will be written in $des_dir/training
         # validation data will be written in $des_dir/validate
@@ -128,11 +138,12 @@ class FaceDetector():
         
         # create label file. it will contains file location 
         # and label for each file
-        training_file = open('training_file.txt','a')
-        validate_file = open('validate_file.txt','a')
+        training_file = open(des_dir+'/training_file.txt','a')
+        validate_file = open(des_dir+'/validate_file.txt','a')
         
         files = self.getfiles(src_dir)
         cnt = 0 
+        num = 0 # number of training data
         for f in files:
             rect = self.detect_face(f)
 
@@ -146,17 +157,23 @@ class FaceDetector():
                 if(cnt < 8):
                     des_file = os.path.join(des_dir_training,des_file_name)
                     self.crop_face(f, rect, des_file )
-                    training_file.write("%s,%s\n"%(des_file,label) )
+                    training_file.write("%s,%s,%d\n"%(des_file,label,global_label_index) )
+                    num = num + 1
+                    if (num>maxnum):
+                        break
                 # 30% of files will be stored in validation data directory
                 else: # for validation data
                     des_file = os.path.join(des_dir_validate,des_file_name)
                     self.crop_face(f, rect, des_file)
-                    validate_file.write("%s,%s\n"%(des_file,label) )
+                    validate_file.write("%s,%s,%d\n"%(des_file,label,global_label_index) )
                     
                 if(cnt>9): 
                     cnt = 0
                 cnt = cnt + 1
-                
+        #increase index for image label
+        global global_label_index
+        global_label_index = global_label_index + 1 
+        
         training_file.close()
         validate_file.close()
         
@@ -170,23 +187,28 @@ class FaceDetector():
 
         return dirs
         
-    def crop_faces_rootdir(self,src_dir,des_dir):
+    def crop_faces_rootdir(self,src_dir,des_dir,maxnum):
         # crop file from sub-directoris in src_dir
         dirs = self.getdirs(src_dir)
         
         #list sub directory
         for d in dirs:
             print('[INFO] : ### Starting cropping in directory %s ###'%d)
-            self.crop_faces_dir(d, des_dir)
+            self.crop_faces_dir(d, des_dir,maxnum)
         #loop and run face crop
 
-        
+#usage
+# arg[1] : src directory
+# arg[2] : destination diectory
+# arg[3] : max number of samples per class        
 def main(argv):
     srcdir= argv[1]
     desdir = argv[2]
+    maxnum = int(argv[3])
+    
     detector = FaceDetector()
 
-    detector.crop_faces_rootdir(srcdir, desdir)
+    detector.crop_faces_rootdir(srcdir, desdir,maxnum)
     #detector.crop_faces_dir(inputfile,outputfile)
     #rect = detector.detect_face(inputfile)
     #detector.rect_image(inputfile, rect, outputfile)
