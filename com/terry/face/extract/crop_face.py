@@ -8,15 +8,22 @@ from PIL import Image
 from PIL import ImageDraw
 from genericpath import isfile
 import os
+import hashlib
 from oauth2client.service_account import ServiceAccountCredentials
 
 
 NUM_THREADS = 10
-MAX_RESULTS = 1
+MAX_FACE = 2
+MAX_LABEL = 50
 IMAGE_SIZE = 96,96
+MAX_ROLL = 20
+MAX_TILT = 20
+MAX_PAN = 20
 
 # index to transfrom image string label to number
 global_label_index = 0 
+global_label_number = [0 for x in range(1000)]
+global_image_hash = []
 
 class FaceDetector():
     def __init__(self):
@@ -29,7 +36,9 @@ class FaceDetector():
         #print ("Getting vision API client : %s" ,self.service)
 
     #def extract_face(selfself,image_file,output_file):
-        
+    def skew_angle(self):
+        return None
+    
     def detect_face(self,image_file):
         try:
             with io.open(image_file,'rb') as fd:
@@ -38,10 +47,16 @@ class FaceDetector():
                         'image':{
                             'content':base64.b64encode(image).decode('utf-8')
                             },
-                        'features':[{
+                        'features':[
+                            {
                             'type':'FACE_DETECTION',
-                            'maxResults':MAX_RESULTS,
-                            }]
+                            'maxResults':MAX_FACE,
+                            },
+                            {
+                            'type':'LABEL_DETECTION',
+                            'maxResults':MAX_LABEL,
+                            }
+                                    ]
                         }]
                 fd.close()
         
@@ -53,10 +68,28 @@ class FaceDetector():
                  return None
                 
             face = response['responses'][0]['faceAnnotations']
-          
+            label = response['responses'][0]['labelAnnotations']
+            
             if len(face) > 1 :
                 print('[Error] %s: It has more than 2 faces in a file' % image_file)
                 return None
+            
+            roll_angle = face[0]['rollAngle']
+            pan_angle = face[0]['panAngle']
+            tilt_angle = face[0]['tiltAngle']
+            angle = [roll_angle,pan_angle,tilt_angle]
+            
+            # check angle
+            # if face skew angle is greater than > 20, it will skip the data
+            if abs(roll_angle) > MAX_ROLL or abs(pan_angle) > MAX_PAN or abs(tilt_angle) > MAX_TILT:
+                print('[Error] %s: face skew angle is big' % image_file)
+                return None
+            
+            # check sunglasses
+            for l in label:
+                if 'sunglasses' in l['description']:
+                  print('[Error] %s: sunglass is detected' % image_file)  
+                  return None
             
             box = face[0]['fdBoundingPoly']['vertices']
             left = box[0]['x']
@@ -67,7 +100,7 @@ class FaceDetector():
                 
             rect = [left,top,right,bottom]
                 
-            print("[Info] %s: Find face from in position %s" % (image_file,rect))
+            print("[Info] %s: Find face from in position %s and skew angle %s" % (image_file,rect,angle))
             return rect
         except Exception as e:
             print('[Error] %s: cannot process file : %s' %(image_file,str(e)) )
@@ -85,14 +118,33 @@ class FaceDetector():
             print('[Error] %s: Rect image writing error : %s' %(image_file,str(e)) )
         
     def crop_face(self,image_file,rect,outputfile):
+        
+        global global_image_hash
         try:
             fd = io.open(image_file,'rb')
             image = Image.open(fd)  
+
+            # extract hash from image to check duplicated image
+            m = hashlib.md5()
+            with io.BytesIO() as memf:
+                image.save(memf, 'PNG')
+                data = memf.getvalue()
+                m.update(data)
+            image_hash = m.hexdigest()
+            
+            if image_hash in global_image_hash:
+                print('[Error] %s: Duplicated image' %(image_file) )
+                return None
+            global_image_hash.append(image_hash)
+
             crop = image.crop(rect)
             im = crop.resize(IMAGE_SIZE,Image.ANTIALIAS)
+            
+            
             im.save(outputfile,"JPEG")
             fd.close()
-            print('[Info] %s: Crop face %s and write it to file : %s' %(image_file,rect,outputfile) )
+            print('[Info]  %s: Crop face %s and write it to file : %s' %( image_file,rect,outputfile) )
+            return True
         except Exception as e:
             print('[Error] %s: Crop image writing error : %s' %(image_file,str(e)) )
         
@@ -142,6 +194,7 @@ class FaceDetector():
         validate_file = open(des_dir+'/validate_file.txt','a')
         
         files = self.getfiles(src_dir)
+        global global_label_index
         cnt = 0 
         num = 0 # number of training data
         for f in files:
@@ -156,24 +209,28 @@ class FaceDetector():
                 # 70% of file will be stored in training data directory
                 if(cnt < 8):
                     des_file = os.path.join(des_dir_training,des_file_name)
-                    self.crop_face(f, rect, des_file )
-                    training_file.write("%s,%s,%d\n"%(des_file,label,global_label_index) )
-                    num = num + 1
-                    if (num>maxnum):
+                    # if we already have duplicated image, crop_face will return None
+                    if self.crop_face(f, rect, des_file ) != None:
+                        training_file.write("%s,%s,%d\n"%(des_file,label,global_label_index) )
+                        num = num + 1
+                        global_label_number[global_label_index] = num
+                        cnt = cnt+1
+
+                    if (num>=maxnum):
                         break
                 # 30% of files will be stored in validation data directory
                 else: # for validation data
                     des_file = os.path.join(des_dir_validate,des_file_name)
-                    self.crop_face(f, rect, des_file)
-                    validate_file.write("%s,%s,%d\n"%(des_file,label,global_label_index) )
+                    if self.crop_face(f, rect, des_file) != None:
+                        validate_file.write("%s,%s,%d\n"%(des_file,label,global_label_index) )
+                        cnt = cnt+1
                     
                 if(cnt>9): 
                     cnt = 0
-                cnt = cnt + 1
         #increase index for image label
-        global global_label_index
-        global_label_index = global_label_index + 1 
         
+        global_label_index = global_label_index + 1 
+        print('## label %s has %s of training data' %(global_label_index,num))
         training_file.close()
         validate_file.close()
         
@@ -196,6 +253,8 @@ class FaceDetector():
             print('[INFO] : ### Starting cropping in directory %s ###'%d)
             self.crop_faces_dir(d, des_dir,maxnum)
         #loop and run face crop
+        global global_label_number
+        print("number of datas per label ", global_label_number)
 
 #usage
 # arg[1] : src directory
